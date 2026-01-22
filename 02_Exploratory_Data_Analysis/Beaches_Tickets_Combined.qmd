@@ -1,0 +1,519 @@
+---
+title: "Beaches Parking Ticket EDA"
+author: "Derek Kusmenko"
+date: today
+date-format: "DD/MM/YY"
+execute: 
+  warning: false
+format: 
+    pdf:
+      toc: true
+---
+
+```{r}
+library(opendatatoronto)
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(skimr)
+library(janitor)
+library(lubridate)
+library(tidytext)
+```
+
+First look at the open data Toronto datasets available.
+
+```{r}
+all_data <- list_packages(limit = 500)
+head(all_data)
+```
+
+
+Look at parking ticket data using the ID.
+
+Select the past few years worth of data
+
+```{r}
+res <- list_package_resources("8c233bc2-1879-44ff-a0e4-9b69a9032c54")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+tickets_2024_ids <- res |> filter(year==2024) |> select(id) |> pull()
+
+tickets_2024 <- get_resource(tickets_2024_ids)
+
+# make the column names nicer to work with
+tickets_2024 <- clean_names(tickets_2024)
+```
+
+
+View data to ensure it is what we want.
+
+```{r}
+head(tickets_2024)
+```
+
+
+```{r}
+# combine the list of dataframes into one
+all_tickets_2024 <- bind_rows(tickets_2024)
+```
+
+Repeat for the next few years worth of data.
+
+```{r}
+res <- list_package_resources("8c233bc2-1879-44ff-a0e4-9b69a9032c54")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+tickets_2023_ids <- res |> filter(year==2023) |> select(id) |> pull()
+
+tickets_2023 <- get_resource(tickets_2023_ids)
+
+# make the column names nicer to work with
+tickets_2023 <- clean_names(tickets_2023)
+
+all_tickets_2023 <- bind_rows(tickets_2023)
+```
+
+```{r}
+res <- list_package_resources("8c233bc2-1879-44ff-a0e4-9b69a9032c54")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+tickets_2022_ids <- res |> filter(year==2022) |> select(id) |> pull()
+
+tickets_2022 <- get_resource(tickets_2022_ids)
+
+# make the column names nicer to work with
+tickets_2022 <- clean_names(tickets_2022)
+
+all_tickets_2022 <- bind_rows(tickets_2022)
+
+```
+
+```{r}
+all_tickets <- bind_rows(all_tickets_2022, all_tickets_2023,all_tickets_2024)
+
+```
+
+Parse the dates.
+
+```{r}
+tickets_clean <- all_tickets |>
+  arrange(date_of_infraction) |>
+  mutate(
+    
+    # convert integer date to date type
+    date_actual = ymd(date_of_infraction),
+
+    datetime_infraction = ymd_hm(paste(date_of_infraction, sprintf("%04d", time_of_infraction))),
+    
+    # further break down dates for analysis
+    hour_of_day = hour(datetime_infraction),
+    month_name = month(date_actual, label = TRUE),
+    year = as_factor(year(date_actual))
+  )
+```
+
+```{r}
+
+# try to capture all the streets in the Beaches area
+side_streets_regex <- paste(c(
+  "KINGSTON RD", "WOODBINE AVE", "KIPPENDAVIE", "KEW BEACH", "KENILWORTH", 
+  "WAVERLEY", "LEE AVE", "LEUTY", "VIOLET", "ALFREDA", "WINEVA", "CLYDE", 
+  "HERBERT", "BEAVER", "BELLEFAIR", "WHEELER", "HAMBLY", "KITCHENER", 
+  "MACLEAN", "GLEN MANOR", "BALSAM", "SILVER BIRCH", "PINE AVE", 
+  "NEVILLE PARK", "HUBBARD", "HAMMERSMITH"
+), collapse = "|")
+
+# filter for these locations only
+beaches_tickets <- tickets_clean |>
+  mutate(
+    # create a clean uppercase version of the location for matching
+    loc_clean = str_to_upper(location2),
+    
+    # extract the address number 
+    address_num = as.numeric(str_extract(loc_clean, "^\\d+"))
+  ) |>
+  filter(
+    # select streets listed above
+    str_detect(loc_clean, side_streets_regex) |
+    
+    # select if on queen street in Beaches range
+    (str_detect(loc_clean, "QUEEN ST E") & address_num >= 1600 & address_num <= 2500) |
+    
+    # select if on queen street with at a side street intersection in the Beaches
+    (str_detect(loc_clean, "QUEEN ST E") & is.na(address_num) & str_detect(str_to_upper(location4), side_streets_regex))
+  )
+
+print(paste("Original count:", nrow(tickets_clean)))
+print(paste("Beaches only count:", nrow(beaches_tickets)))
+
+```
+
+
+```{r}
+
+# plot count of parking infractions during time of day
+ggplot(beaches_tickets, aes(x = hour_of_day)) +
+  geom_bar(fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Parking Infractions by Hour in The Beaches",
+    subtitle = "Proxy for peak visitor traffic flow",
+    x = "Hour of Day (24h)",
+    y = "Number of Tickets Issued"
+  ) +
+  scale_x_continuous(breaks = seq(0, 23, 2))
+
+```
+
+
+```{r}
+
+# plot heatmap of tickets handed out by day and hour
+beaches_tickets |>
+  mutate(day_of_week = wday(date_actual, label = TRUE, week_start = 1)) |>
+  count(day_of_week, hour_of_day) |>
+  ggplot(aes(x = day_of_week, y = hour_of_day, fill = n)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "magma") +
+  scale_y_reverse(breaks = seq(0, 23, 2)) +
+  theme_minimal() +
+  labs(
+    title = "Parking Intensity Heatmap",
+    subtitle = "Darker/Brighter colors indicate higher congestion/enforcement",
+    x = "Day of Week",
+    y = "Hour of Day",
+    fill = "Ticket Count"
+  )
+
+```
+
+```{r}
+
+# same heatmaps as above but faceted per year
+
+beaches_tickets |>
+  mutate(
+    day_of_week = wday(date_actual, label = TRUE, week_start = 1)
+  ) |>
+  
+  # group by year, day, and hour
+  count(year, day_of_week, hour_of_day) |>
+  
+  ggplot(aes(x = day_of_week, y = hour_of_day, fill = n)) +
+  geom_tile() +
+  
+  # facet for each year
+  facet_wrap(~year) +
+  
+  scale_fill_viridis_c(option = "magma") +
+  scale_y_reverse(breaks = seq(0, 23, 4)) + 
+  theme_minimal() +
+  labs(
+    title = "Parking Intensity Heatmap (By Year)",
+    subtitle = "Comparing weekly congestion patterns over time",
+    x = "Day of Week",
+    y = "Hour of Day",
+    fill = "Tickets"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 7), 
+    panel.grid = element_blank()
+  )
+
+```
+
+
+
+```{r}
+# now want to plot top locations for tickets 
+
+# summarize parking ticket count by street
+street_counts <- beaches_tickets |>
+  # some street names have extra spaces, remove them
+  mutate(street_name = str_trim(location2)) |> 
+  count(street_name, sort = TRUE) |>
+  # take top 30 streets
+  head(30)
+
+# plot top ticket counts by street/location
+ggplot(street_counts, aes(x = reorder(street_name, n), y = n)) +
+  geom_col(fill = "firebrick", width = 0.7) +
+  geom_text(aes(label = n), hjust = -0.2, size = 3.5) + # add numbers to bars
+  coord_flip(clip = "off") + # flip axes to fit street names
+  theme_minimal()+
+  theme(plot.margin = margin(r = 20))+
+  labs(
+    title = "Top 30 Streets for Parking Infractions in The Beaches",
+    subtitle = "Higher counts indicate potential hotspots for flow issues",
+    x = NULL, 
+    y = "Total Tickets Issued"
+  ) +
+  theme(
+    panel.grid.major.y = element_blank() 
+  )
+
+
+```
+
+```{r}
+#repeat above but facet fdr each year and take top 15 only
+street_counts_yearly <- beaches_tickets |>
+  mutate(
+    street_name = str_trim(location2)
+  ) |>
+  # count infractions per street per year
+  count(year, street_name) |>
+  
+  group_by(year) |>
+  slice_max(n, n = 15) |> 
+  ungroup()
+
+# created faceted plot
+ggplot(street_counts_yearly, aes(
+    # Sort streets by count per year
+    x = reorder_within(street_name, n, year), 
+    y = n
+  )) +
+  geom_col(fill = "firebrick", width = 0.7) +
+  geom_text(aes(label = n), hjust = -0.2, size = 3) + 
+  
+  coord_flip() +
+  
+  facet_wrap(~year, scales = "free_y") + 
+  
+  scale_x_reordered() +
+  
+  theme_minimal() +
+  labs(
+    title = "Top 15 Streets for Parking Infractions (By Year)",
+    subtitle = "Tracking where enforcement hotspots have shifted over time",
+    x = NULL, 
+    y = "Total Tickets Issued"
+  ) +
+  theme(
+    panel.grid.major.y = element_blank()
+  )
+```
+
+
+```{r}
+# want to plot top reasons for tickets
+reason_counts <- beaches_tickets |>
+  mutate(reason = str_to_title(infraction_description)) |>
+  count(reason, sort = TRUE) |>
+  # Keep the top 15 reasons
+  head(15)
+
+# create bar chart 
+ggplot(reason_counts, aes(x = reorder(reason, n), y = n)) +
+  geom_col(fill = "forestgreen", width = 0.7) +
+  geom_text(aes(label = n), hjust = -0.1, size = 3.5) +
+  coord_flip(clip = "off") + 
+  theme_minimal() +
+  theme(plot.margin = margin(r = 20))+
+  labs(
+    title = "Top 15 Reasons for Parking Tickets in The Beaches",
+    subtitle = "Understanding the nature of parking violations",
+    x = NULL,
+    y = "Total Tickets Issued"
+  ) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 10)
+  )
+
+```
+
+
+
+```{r}
+
+#repeat above faceted per year 
+reason_counts_yearly <- beaches_tickets |>
+  
+  mutate(
+    reason = str_to_title(infraction_description)
+  ) |>
+  
+  count(year, reason) |>
+  
+  # select top 15 per year
+  group_by(year) |>
+  slice_max(n, n = 15) |> 
+  ungroup()
+
+# create faceted plot
+ggplot(reason_counts_yearly, aes(
+    # sort reasons by count per year
+    x = reorder_within(reason, n, year), 
+    y = n
+  )) +
+  geom_col(fill = "forestgreen", width = 0.7) +
+  geom_text(aes(label = n), hjust = -0.1, size = 3) + 
+  
+  coord_flip() +
+  
+  facet_wrap(~year, scales = "free_y") + 
+  
+  scale_x_reordered() + 
+  
+  theme_minimal() +
+  labs(
+    title = "Top 15 Reasons for Parking Tickets (By Year)",
+    subtitle = "Tracking changes in enforcement priorities",
+    x = NULL,
+    y = "Total Tickets Issued"
+  ) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 9) 
+    )
+
+```
+
+
+
+```{r}
+# time series plot of daily ticket count over the years
+daily_trend <- beaches_tickets |>
+  count(date_actual) 
+
+ggplot(daily_trend, aes(x = date_actual, y = n)) +
+  geom_line(color = "steelblue", size = 0.8) +
+  geom_smooth(method = "loess", color = "firebrick", se = FALSE, size = 1) + # smoothed trend line
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") + 
+  theme_minimal() +
+  labs(
+    title = "Daily Parking Infractions in The Beaches (2024)",
+    subtitle = "Blue line = Daily Count | Red line = Smoothed Trend",
+    x = "Date",
+    y = "Number of Tickets"
+  )
+
+#bar chart of total monthly tickets 
+monthly_trend <- beaches_tickets |>
+  mutate(month_label = floor_date(date_actual, "month")) |>
+  count(month_label)
+
+ggplot(monthly_trend, aes(x = month_label, y = n)) +
+  geom_col(fill = "darkcyan", width = 20) + 
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  theme_minimal() +
+  labs(
+    title = "Total Tickets by Month",
+    subtitle = "identifying the peak season for enforcement/congestion",
+    x = "Month",
+    y = "Total Tickets"
+  )
+
+
+```
+
+
+
+```{r}
+# now facet time series by year
+daily_trend <- beaches_tickets |> 
+  count(year, date_actual) 
+
+ggplot(daily_trend, aes(x = date_actual, y = n)) +
+  geom_line(color = "steelblue", size = 0.8) +
+  
+  # smooth trend line 
+  geom_smooth(method = "loess", color = "firebrick", se = FALSE, size = 1) + 
+  
+  facet_wrap(~year, scales = "free_x", ncol = 1) + 
+  
+  scale_x_date(date_breaks = "2 months", date_labels = "%b") + 
+  theme_minimal() +
+  labs(
+    title = "Daily Parking Infractions in The Beaches (By Year)",
+    subtitle = "Blue line = Daily Count | Red line = Smoothed Trend",
+    x = "Date",
+    y = "Number of Tickets"
+  )
+
+# facet bar chart version as well
+monthly_trend <- beaches_tickets |> 
+  mutate(
+    year = year(date_actual),
+    month_label = floor_date(date_actual, "month")
+  ) |> 
+  count(year, month_label)
+
+ggplot(monthly_trend, aes(x = month_label, y = n)) +
+  geom_col(fill = "darkcyan", width = 25) + 
+  
+  facet_wrap(~year, scales = "free_x") +
+  
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  theme_minimal() +
+  labs(
+    title = "Total Tickets by Month (Yearly Comparison)",
+    subtitle = "Identifying peak enforcement seasons across different years",
+    x = "Month",
+    y = "Total Tickets"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1) 
+  )
+
+
+
+```
+
+```{r}
+# instead of facet, plot 3 different bars for each year
+ggplot(beaches_tickets, aes(x = hour_of_day, fill = year)) +
+  geom_bar(position = "dodge", color = "white") + 
+  scale_fill_manual(values = c("2022" = "firebrick4","2023" = "gray", "2024" = "steelblue")) +
+  theme_minimal() +
+  labs(
+    title = "Parking Infractions: 2022 vs 2023 vs 2024",
+    subtitle = "Comparing visitor flow patterns across years",
+    x = "Hour of Day",
+    y = "Tickets Issued",
+    fill = "Year"
+  )
+
+
+```
+
+
+
+```{r}
+# plot unsmoothed trends over time on same plot
+monthly_trend <- beaches_tickets |>
+  mutate(month_num = month(date_actual, label = TRUE)) |>
+  count(year, month_num)
+
+ggplot(monthly_trend, aes(x = month_num, y = n, group = year, color = year)) +
+  geom_line(linewidth = 1) + 
+  geom_point() +
+  theme_minimal() +
+  labs(
+    title = "Monthly Ticket Volume Comparison",
+    x = "Month", 
+    y = "Total Tickets"
+  )
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

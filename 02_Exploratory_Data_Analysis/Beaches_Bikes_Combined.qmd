@@ -1,0 +1,738 @@
+---
+title: "Beaches Bikeshare EDA"
+author: "Derek Kusmenko"
+date: today
+date-format: "DD/MM/YY"
+execute: 
+  warning: false
+format: 
+    pdf:
+      toc: true
+---
+
+```{r}
+
+library(opendatatoronto)
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(skimr)
+library(janitor)
+library(lubridate)
+library(tidytext)
+```
+
+First look at the open data Toronto datasets available.
+
+```{r}
+all_data <- list_packages(limit = 500)
+head(all_data)
+```
+
+
+Look at bike share data. Select past few years worth of data
+
+```{r}
+res <- list_package_resources("7e876c24-177c-4605-9cef-e50dd74c617f")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+bike_2024_ids <- res |> filter(year==2024) |> select(id) |> pull()
+
+bike_2024 <- get_resource(bike_2024_ids)
+
+# make the column names nicer to work with
+bike_2024 <- clean_names(bike_2024)
+```
+
+
+```{r}
+# combine the list of dataframes into one
+
+bike_2024$bike_share_ridership_2024_01_csv <- bike_2024$bike_share_ridership_2024_01_csv |> 
+  mutate(End.Station.Id = as.numeric(End.Station.Id))
+
+
+all_bike_2024 <- bind_rows(bike_2024)
+
+all_bike_2024 <- all_bike_2024 |>
+  mutate(End.Station.Id = as.character(End.Station.Id))
+```
+
+
+```{r}
+
+res <- list_package_resources("7e876c24-177c-4605-9cef-e50dd74c617f")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+bike_2021_ids <- res |> filter(year==2021) |> select(id) |> pull()
+
+bike_2021 <- get_resource(bike_2021_ids)
+
+# make the column names nicer to work with
+bike_2021 <- clean_names(bike_2021)
+
+# combine the list of dataframes into one
+
+bike_2021$bike_share_ridership_2021_01_csv <- bike_2021$bike_share_ridership_2021_01_csv |>
+  mutate(Bike.Id = as.numeric(Bike.Id))
+
+all_bike_2021 <- bind_rows(bike_2021)
+```
+
+```{r}
+res <- list_package_resources("7e876c24-177c-4605-9cef-e50dd74c617f")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+bike_2022_ids <- res |> filter(year==2022) |> select(id) |> pull()
+
+bike_2022 <- get_resource(bike_2022_ids)
+
+# make the column names nicer to work with
+bike_2022 <- clean_names(bike_2022)
+
+# combine the list of dataframes into one
+all_bike_2022 <- bind_rows(bike_2022)
+```
+
+```{r}
+res <- list_package_resources("7e876c24-177c-4605-9cef-e50dd74c617f")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+bike_2023_ids <- res |> filter(year==2023) |> select(id) |> pull()
+
+bike_2023 <- get_resource(bike_2023_ids)
+
+# make the column names nicer to work with
+bike_2023 <- clean_names(bike_2023)
+
+# combine the list of dataframes into one
+all_bike_2023 <- bind_rows(bike_2023)
+```
+
+```{r}
+all_bike <- bind_rows(all_bike_2021, all_bike_2022, all_bike_2023, all_bike_2024)
+```
+
+```{r}
+
+# parse trip start datetime into date, month, and specific hour
+bike_clean <- all_bike |> 
+  mutate(
+    datetime_start = mdy_hm(Start.Time),
+    
+    start_date_actual = as_date(datetime_start),
+    
+    start_hour_of_day = hour(datetime_start),
+    
+    start_month_name = month(datetime_start, label = TRUE),
+    
+    year = year(datetime_start)
+  ) |> 
+  # sort by the new datetime column
+  arrange(datetime_start) |> 
+  filter(!is.na(datetime_start)) |>
+  # repeat with trip end datetime 
+  mutate(
+    datetime_end = mdy_hm(End.Time),
+    
+    end_date_actual = as_date(datetime_end),
+    
+    end_hour_of_day = hour(datetime_end),
+    
+    end_month_name = month(datetime_end, label = TRUE)
+  ) |> 
+  filter(!is.na(datetime_end))
+```
+
+Removed null from start and end as not really useful
+
+```{r}
+# define keywords for Beaches bike share locations
+beaches_keywords <- paste(c(
+  "Woodbine Beach", "Woodbine Park", "Kew Gardens", "Balmy Beach", 
+  "Ashbridges Bay", "Donald D Summerville", 
+  "Lee Ave", "Leuty", "Waverley", "Wineva", "Bellefair", "Hambly", 
+  "Kippendavie", "Kenilworth", "Glen Manor", "Silver Birch", "Neville Park", 
+  "Main St", "Southwood", "Hammersmith"
+), collapse = "|")
+
+#define cross streets on Queen St E
+queen_cross_streets <- "Woodbine|Kingston|Elm|Beech|Willow|Silver|Pine"
+
+# filter for trips either starting or ending in the Beaches
+beaches_trips_clean <- bike_clean |> 
+  # first remove NULL as not useful
+  filter(Start.Station.Name != "NULL", End.Station.Name != "NULL") |> 
+  
+  filter(
+    # filter for starting station
+    str_detect(Start.Station.Name, regex(beaches_keywords, ignore_case = TRUE)) |
+    (str_detect(Start.Station.Name, "Queen St E") & 
+     str_detect(Start.Station.Name, regex(queen_cross_streets, ignore_case = TRUE))) |
+    
+    # filter for end station
+    str_detect(End.Station.Name, regex(beaches_keywords, ignore_case = TRUE)) |
+    (str_detect(End.Station.Name, "Queen St E") & 
+     str_detect(End.Station.Name, regex(queen_cross_streets, ignore_case = TRUE)))
+  )
+
+print(any(beaches_trips_clean$End.Station.Name == "NULL"))
+
+print(paste("Total Beaches-related trips found:", nrow(beaches_trips_clean)))
+
+```
+
+
+```{r}
+# plot for most popular starting locations in Beaches
+beaches_trips_clean |> 
+  count(Start.Station.Name, sort = TRUE) |> 
+  head(10) |> 
+  ggplot(aes(x = reorder(Start.Station.Name, n), y = n)) +
+  geom_col(fill = "blue") + 
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Most Popular Bike Share Stations in The Beaches",
+    x = NULL,
+    y = "Total Trips Started"
+  )
+```
+```{r}
+# plot for top 10 destinations in Beaches
+beaches_trips_clean |> 
+  count(End.Station.Name, sort = TRUE) |> 
+  head(10) |> 
+  ggplot(aes(x = reorder(End.Station.Name, n), y = n)) +
+  geom_col(fill = "blue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Most Popular Bike Share Destinations",
+    x = NULL,
+    y = "Total Trips End"
+  )
+```
+
+```{r}
+# now want to find most popular destination per year
+popular_destinations_yearly <- beaches_trips_clean |> 
+
+  count(year, End.Station.Name) |> 
+  
+  # select the top 10 per year
+  group_by(year) |> 
+  slice_max(n, n = 10) |> 
+  ungroup()
+
+# create faceted plot
+ggplot(popular_destinations_yearly, aes(
+    # sort stations by count 
+    x = reorder_within(End.Station.Name, n, year), 
+    y = n
+  )) +
+  geom_col(fill = "blue") +
+  coord_flip() +
+  
+  facet_wrap(~year, scales = "free_y") + 
+  
+  scale_x_reordered() + 
+  
+  theme_minimal() +
+  labs(
+    title = "Most Popular Bike Share Destinations (By Year)",
+    subtitle = "Where do trips end in The Beaches?",
+    x = NULL,
+    y = "Total Trips Ended"
+  ) +
+  theme(
+    panel.grid.major.y = element_blank()
+  )
+
+```
+
+
+
+```{r}
+# now want to look at top originations for trips starting outside the Beaches
+# helper function to check if a station is in the Beaches
+is_in_beaches <- function(station_name) {
+  str_detect(station_name, regex(beaches_keywords, ignore_case = TRUE)) |
+  (str_detect(station_name, "Queen St E") & 
+   str_detect(station_name, regex(queen_cross_streets, ignore_case = TRUE)))
+}
+
+# filter for trips entering the Beaches
+inflow_trips <- bike_clean |> 
+  filter(Start.Station.Name != "NULL", End.Station.Name != "NULL") |> 
+  filter(
+    !is_in_beaches(Start.Station.Name) &  # started outside
+     is_in_beaches(End.Station.Name)      # ended inside
+  )
+
+print(paste("Total Inflow Trips:", nrow(inflow_trips)))
+
+# plot top starting locations
+inflow_trips |> 
+  count(Start.Station.Name, sort = TRUE) |> 
+  head(15) |> 
+  ggplot(aes(x = reorder(Start.Station.Name, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Top Origins for Trips Ending in The Beaches",
+    subtitle = "Where do visitors cycle from?",
+    x = "Origin Station (Outside The Beaches)",
+    y = "Number of Trips"
+  )
+
+```
+
+```{r}
+# redo above but faceted per year
+top_origins_yearly <- inflow_trips |> 
+
+  mutate(year = year(start_date_actual)) |> 
+  
+  count(year, Start.Station.Name) |> 
+  
+  # select top 15 per year
+  group_by(year) |> 
+  slice_max(n, n = 15) |> 
+  ungroup()
+
+# create faceted plot
+ggplot(top_origins_yearly, aes(
+    # sort stations by count per year
+    x = reorder_within(Start.Station.Name, n, year), 
+    y = n
+  )) +
+  geom_col(fill = "steelblue") + 
+  coord_flip() +
+  
+  facet_wrap(~year, scales = "free_y") + 
+  
+  scale_x_reordered() + 
+  
+  theme_minimal() +
+  labs(
+    title = "Top Origins for Trips Ending in The Beaches (By Year)",
+    subtitle = "Where do visitors cycle from?",
+    x = "Origin Station (Outside The Beaches)",
+    y = "Number of Trips"
+  ) +
+  theme(
+    panel.grid.major.y = element_blank()
+  )
+
+```
+
+
+
+```{r}
+# now want to see the distribution of how long the bike rides are that end in the Beaches
+beaches_time_analysis <- bike_clean |> 
+  # filter for trips that end in the Beaches
+  filter(is_in_beaches(End.Station.Name)) |> 
+  
+  mutate(
+    # convert duration to minutes (currently seconds)
+    duration_min = Trip..Duration / 60,
+  ) |> 
+  # filter out errors (0 seconds) or extreme outliers (> 4 hours)
+  filter(duration_min > 1 & duration_min < 240)
+
+# plot distribution of ride times
+ggplot(beaches_time_analysis, aes(x = duration_min)) +
+  geom_histogram(binwidth = 2, fill = "coral", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "How long do people ride to get to The Beaches?",
+    subtitle = "Trip Duration as a proxy for Distance/Effort",
+    x = "Trip Duration (Minutes)",
+    y = "Number of Trips"
+  ) +
+  # shorten x axis to 60 min as very few data longer than this
+  coord_cartesian(xlim = c(0, 60)) + 
+  scale_x_continuous(breaks = seq(0, 60, 5))
+
+```
+
+```{r}
+# now want to look at if there is a difference in ride times for weekday or weekend trips (commute vs leisure)
+beaches_time_analysis |> 
+  mutate(is_weekend = wday(end_date_actual, week_start = 1) %in% c(6, 7)) |> 
+  ggplot(aes(x = duration_min, fill = is_weekend)) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = c("gray", "orange"), labels = c("Weekday", "Weekend")) +
+  theme_minimal() +
+  labs(title = "Trip Duration: Weekday vs. Weekend", x = "Minutes") +
+  xlim(0, 60)
+
+
+```
+
+```{r}
+# want to facet above plot by year
+beaches_time_analysis |> 
+  mutate(
+    year = year(end_date_actual),
+    
+    # define Weekend vs Weekday
+    is_weekend = wday(end_date_actual, week_start = 1) %in% c(6, 7)
+  ) |> 
+  
+  ggplot(aes(x = duration_min, fill = is_weekend)) +
+  geom_density(alpha = 0.5) +
+  
+  facet_wrap(~year) + 
+  
+  scale_fill_manual(
+    values = c("gray", "orange"), 
+    labels = c("Weekday", "Weekend")
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Trip Duration: Weekday vs. Weekend (By Year)",
+    subtitle = "Comparing ride length patterns across years",
+    x = "Duration (Minutes)",
+    y = "Density",
+    fill = "Day Type"
+  ) +
+  xlim(0, 60) # focus on trips <= 60 min
+
+
+
+```
+
+
+
+
+```{r}
+# want to look at trips coming into the Beaches and the average length by destination 
+# could be a proxy for distance travelled or leisure ride vs commuting ride
+station_stats <- inflow_trips |> 
+  group_by(Start.Station.Name) |> 
+  summarise(
+    total_trips = n(),
+    avg_duration_min = mean(Trip..Duration, na.rm = TRUE) / 60 
+  ) |> 
+  # filter for meaningful sample sizes for the average
+  filter(total_trips > 10) |> 
+  arrange(desc(total_trips)) |> 
+  head(15)
+
+# plot the top 15 destinations, coloured by the average trip time
+ggplot(station_stats, aes(x = reorder(Start.Station.Name, total_trips), 
+                          y = total_trips, 
+                          fill = avg_duration_min)) +
+  geom_col() +
+  coord_flip() +
+  
+  # use color scale that highlights duration intensity
+
+  scale_fill_viridis_c(option = "plasma", name = "Avg Trip\n(Minutes)") +
+  
+  theme_minimal() +
+  labs(
+    title = "Top Origins for Trips to The Beaches",
+    subtitle = "Bar Length = Volume | Color = Average Travel Time",
+    x = "Origin Station",
+    y = "Number of Trips"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.major.y = element_blank()
+  )
+
+```
+
+```{r}
+# want to repeat but faceted by year
+station_stats_yearly <- inflow_trips |>
+  mutate(year = year(start_date_actual)) |> 
+  group_by(year, Start.Station.Name) |> 
+  summarise(
+    total_trips = n(),
+    avg_duration_min = mean(Trip..Duration, na.rm = TRUE) / 60,
+    .groups = "drop"
+  ) |> 
+  group_by(year) |> 
+  slice_max(total_trips, n = 15) |> 
+  ungroup()
+
+# plot the bar charts
+ggplot(station_stats_yearly, aes(
+    x = reorder_within(Start.Station.Name, total_trips, year), 
+    y = total_trips, 
+    fill = avg_duration_min
+  )) +
+  geom_col() +
+  coord_flip() +
+  
+  facet_wrap(~year, scales = "free_y") + 
+  
+  scale_x_reordered() +
+  
+  scale_fill_viridis_c(option = "plasma", name = "Avg Trip\n(Minutes)") +
+  theme_minimal() +
+  labs(
+    title = "Top Origins for Trips to The Beaches (By Year)",
+    subtitle = "Comparing feeder stations across different years",
+    x = "Origin Station",
+    y = "Number of Trips"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.major.y = element_blank()
+  )
+```
+
+
+
+```{r}
+
+# filter for inbound trips and count by day
+inbound_daily_trend <- bike_clean |> 
+  filter(Start.Station.Name != "NULL", End.Station.Name != "NULL") |> 
+  filter(
+    !is_in_beaches(Start.Station.Name) & 
+     is_in_beaches(End.Station.Name)     
+  ) |> 
+  count(end_date_actual) 
+
+# create the time series plot
+ggplot(inbound_daily_trend, aes(x = end_date_actual, y = n)) +
+
+  geom_line(color = "steelblue", alpha = 0.6) + 
+  
+  # add smoothed trend line 
+  geom_smooth(method = "gam", color = "darkorange", size = 1, se = FALSE) + 
+  
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  theme_minimal() +
+  labs(
+    title = "Seasonal Inflow: Bike Trips Entering The Beaches",
+    subtitle = "Daily volume of rides starting outside and ending in the neighborhood",
+    x = "Date",
+    y = "Number of Inbound Trips"
+  )
+
+
+```
+
+
+```{r}
+
+# calculate average duration per day 
+duration_daily_trend <- bike_clean |> 
+  filter(Start.Station.Name != "NULL", End.Station.Name != "NULL") |> 
+  filter(
+    !is_in_beaches(Start.Station.Name) & 
+     is_in_beaches(End.Station.Name)     
+  ) |> 
+  group_by(end_date_actual) |> 
+  summarise(
+    avg_duration_min = mean(Trip..Duration, na.rm = TRUE) / 60, 
+    trip_count = n()
+  ) |> 
+  # remove days with very few trips to avoid huge spikes from single outliers
+  filter(trip_count >= 5)
+
+# plot the time series
+ggplot(duration_daily_trend, aes(x = end_date_actual, y = avg_duration_min)) +
+  
+  geom_line(color = "cadetblue", alpha = 0.5) + 
+  
+  # add smoothed trend
+  geom_smooth(method = "gam", color = "midnightblue", size = 1.2, se = FALSE) + 
+  
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  theme_minimal() +
+  labs(
+    title = "Average Trip Duration for Inbound Rides",
+    subtitle = "Are visitors staying on the bike longer in the summer?",
+    x = "Date",
+    y = "Average Duration (Minutes)"
+  ) +
+  coord_cartesian(ylim = c(0, 60))
+
+
+
+```
+
+
+
+Import Toronto Daily Temperature historical data
+
+```{r}
+library(readr)
+Toronto_Daily_Temp <- read_csv("Toronto_Daily_Temp.csv")
+Toronto_Daily_Temp <- clean_names(Toronto_Daily_Temp)
+Toronto_Daily_Temp <- Toronto_Daily_Temp |> filter(local_year > 2020)
+
+# parse date so it is compatible with the bike share data
+temp_clean <- Toronto_Daily_Temp |> 
+  mutate(
+    
+    date = as_date(local_date),
+
+    month_name = month(date, label = TRUE)
+  ) |> 
+  # sort by the new datetime column
+  arrange(date) |> 
+
+  filter(!is.na(date))
+
+```
+
+
+
+
+
+```{r}
+
+
+# want to plot the number of inbound trips and the daily maximum temperauture to see if there are upticks when warm in off season
+
+# join temperature data to bike share
+combined_data <- inbound_daily_trend |>
+  mutate(join_date = as_date(end_date_actual)) |> 
+  inner_join(temp_clean, by = c("join_date" = "date")) |> 
+  mutate(year = year(join_date))
+
+# create plotting function to use for each year
+create_year_plot <- function(target_year, data) {
+  
+  # filter for the specific year
+  year_data <- data |> filter(year == target_year)
+  
+  # need to scale the y-axes as plotting 2 axes on same plot for better viewing
+  max_trips <- max(year_data$n, na.rm = TRUE)
+  max_temp <- max(year_data$max_temperature, na.rm = TRUE)
+  
+  # ensure no dividing by zero
+  scale_factor <- if(max_temp > 0) max_trips / max_temp else 10 
+  
+  # create plot
+  p <- ggplot(year_data, aes(x = join_date)) +
+    
+    # temperature data (blue)
+    geom_line(aes(y = max_temperature), color = "steelblue", size = 1, alpha = 0.8) +
+    
+    # bike share data (scaled) (red)
+    geom_line(aes(y = n / scale_factor), color = "firebrick4", size = 0.8, alpha = 0.6) +
+    
+    # set up two axes
+    scale_y_continuous(
+      name = "Max Temp (°C)",
+      sec.axis = sec_axis(~ . * scale_factor, name = "Daily Trips")
+    ) +
+    
+    scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+    theme_bw() +
+    labs(
+      title = paste("Beaches Flow Analysis:", target_year),
+      subtitle = "Temperature (Blue) vs. Bike Inflow (Red)",
+      x = NULL
+    ) +
+    theme(
+      axis.title.y = element_text(color = "steelblue", face = "bold", size=9),
+      axis.text.y = element_text(color = "steelblue"),
+      axis.title.y.right = element_text(color = "firebrick4", face = "bold", size=9),
+      axis.text.y.right = element_text(color = "firebrick4")
+    )
+  
+  return(p)
+}
+
+# generate a plot per year
+plot_2021 <- create_year_plot(2021, combined_data)
+plot_2022 <- create_year_plot(2022, combined_data)
+plot_2023 <- create_year_plot(2023, combined_data)
+plot_2024 <- create_year_plot(2024, combined_data)
+
+# view plots
+print(plot_2021)
+print(plot_2022)
+print(plot_2023)
+print(plot_2024)
+
+```
+
+```{r}
+# now want to focus only on Jan-May, the off season
+combined_data <- inbound_daily_trend |>
+  mutate(join_date = as_date(end_date_actual)) |> 
+  inner_join(temp_clean, by = c("join_date" = "date")) |> 
+  mutate(year = year(join_date))
+
+# filter for specific months in plotting function
+create_half_year_plot <- function(target_year, data) {
+  
+  # filter for year and months (month 5 = may)
+  plot_data <- data |> 
+    filter(year == target_year) |> 
+    filter(month(join_date) <= 5) 
+  
+  
+  # calculate scale factor for plotting both axes nicely
+  max_trips <- max(plot_data$n, na.rm = TRUE)
+  max_temp <- max(plot_data$max_temperature, na.rm = TRUE)
+  
+  # ensure no division by 0
+  scale_factor <- if(max_temp > 0) max_trips / max_temp else 10
+  
+  # generate plot
+  ggplot(plot_data, aes(x = join_date)) +
+    
+    # temperature data (blue)
+    geom_line(aes(y = max_temperature), color = "steelblue", size = 1, alpha = 0.8) +
+    
+    # bike share data (red)
+    geom_line(aes(y = n / scale_factor), color = "firebrick4", size = 0.8, alpha = 0.6) +
+    
+    scale_y_continuous(
+      name = "Max Temp (°C)",
+      sec.axis = sec_axis(~ . * scale_factor, name = "Daily Trips")
+    ) +
+    
+    scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+    theme_bw() +
+    labs(
+      title = paste(target_year, "(Jan - June Only)"),
+      x = NULL
+    ) +
+    theme(
+      axis.title.y = element_text(color = "steelblue", size=8, face="bold"),
+      axis.text.y = element_text(color = "steelblue", size=8),
+      axis.title.y.right = element_text(color = "firebrick4", size=8, face="bold"),
+      axis.text.y.right = element_text(color = "firebrick4", size=8),
+      plot.title = element_text(size=10, face="bold")
+    )
+}
+
+# generate and view plots
+p21 <- create_half_year_plot(2021, combined_data)
+p22 <- create_half_year_plot(2022, combined_data)
+p23 <- create_half_year_plot(2023, combined_data)
+p24 <- create_half_year_plot(2024, combined_data)
+
+
+print(p21)
+print(p22)
+print(p23)
+print(p24)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+

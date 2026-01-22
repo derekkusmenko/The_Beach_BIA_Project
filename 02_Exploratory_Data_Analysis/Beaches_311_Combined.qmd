@@ -1,0 +1,377 @@
+---
+title: "Beaches 311 Complaints EDA"
+author: "Derek Kusmenko"
+date: today
+date-format: "DD/MM/YY"
+execute: 
+  warning: false
+format: 
+    pdf:
+      toc: true
+---
+
+```{r}
+library(opendatatoronto)
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(skimr)
+library(janitor)
+library(lubridate)
+library(tidytext)
+```
+
+First look at the open data Toronto datasets available.
+
+```{r}
+all_data <- list_packages(limit = 500)
+head(all_data)
+```
+
+
+Look at the 311 complaints data. Import the data for past few years.
+
+```{r}
+res <- list_package_resources("2e54bc0e-4399-4076-b717-351df5918ae7")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+beach_311_2025_ids <- res |> filter(year==2025) |> select(id) |> pull()
+
+beach_311_2025 <- get_resource(beach_311_2025_ids)
+
+# make the column names nicer to work with
+beach_311_2025 <- clean_names(beach_311_2025)
+
+beach_311_2025 <- bind_rows(beach_311_2025)
+```
+
+
+```{r}
+res <- list_package_resources("2e54bc0e-4399-4076-b717-351df5918ae7")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+beach_311_2024_ids <- res |> filter(year==2024) |> select(id) |> pull()
+
+beach_311_2024 <- get_resource(beach_311_2024_ids)
+
+# make the column names nicer to work with
+beach_311_2024 <- clean_names(beach_311_2024)
+
+beach_311_2024 <- bind_rows(beach_311_2024)
+```
+
+
+```{r}
+res <- list_package_resources("2e54bc0e-4399-4076-b717-351df5918ae7")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+beach_311_2023_ids <- res |> filter(year==2023) |> select(id) |> pull()
+
+beach_311_2023 <- get_resource(beach_311_2023_ids)
+
+# make the column names nicer to work with
+beach_311_2023 <- clean_names(beach_311_2023)
+
+beach_311_2023 <- bind_rows(beach_311_2023)
+```
+
+```{r}
+res <- list_package_resources("2e54bc0e-4399-4076-b717-351df5918ae7")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+beach_311_2022_ids <- res |> filter(year==2022) |> select(id) |> pull()
+
+beach_311_2022 <- get_resource(beach_311_2022_ids)
+
+# make the column names nicer to work with
+beach_311_2022 <- clean_names(beach_311_2022)
+
+beach_311_2022 <- bind_rows(beach_311_2022)
+```
+
+```{r}
+res <- list_package_resources("2e54bc0e-4399-4076-b717-351df5918ae7")
+res <- res |> mutate(year = str_extract(name, "202.?"))
+beach_311_2021_ids <- res |> filter(year==2021) |> select(id) |> pull()
+
+beach_311_2021 <- get_resource(beach_311_2021_ids)
+
+# make the column names nicer to work with
+beach_311_2021 <- clean_names(beach_311_2021)
+
+beach_311_2021 <- bind_rows(beach_311_2021)
+```
+
+```{r}
+beach_311 <- bind_rows(beach_311_2021, beach_311_2022, beach_311_2023, beach_311_2024, beach_311_2025)
+
+# filter for only data from the Beaches ward
+beach_311 <- beach_311 |>
+  filter(Ward == "Beaches-East York (19)")
+```
+
+```{r}
+
+# parse creation date into date, year, month, day, and specific hour
+beach_311 <- beach_311 |>
+  mutate(
+    # ensure the date is parsed first
+    creation_date = ymd_hms(Creation.Date),
+    
+    year_col  = year(creation_date),
+    month_col = month(creation_date, label = TRUE, abbr = TRUE), 
+    day_col   = day(creation_date),
+    hour_col  = hour(creation_date)
+  )|> 
+  # sort by the new datetime column
+  arrange(creation_date) |> 
+
+  filter(!is.na(creation_date))
+```
+
+
+
+```{r}
+
+# count the top 15 request types
+top_requests <- beach_311 |>
+  count(Service.Request.Type, sort = TRUE) |>
+  head(15)
+
+# plot top 15 service requests in the Beaches
+ggplot(top_requests, aes(x = reorder(Service.Request.Type, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Top 15 Service Requests in The Beaches",
+    x = NULL,
+    y = "Count"
+  )
+
+```
+
+
+
+```{r}
+# want to plot the number of requests per hour of the day to see when people are most likely to complain
+beach_311 |>
+  count(hour_col) |>
+  ggplot(aes(x = hour_col, y = n)) +
+  geom_line(color = "darkred", size = 1) +
+  geom_point() +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  labs(
+    title = "Hourly Pattern of 311 Requests",
+    subtitle = "Are people reporting issues during the commute or the workday?",
+    x = "Hour of Day",
+    y = "Total Requests"
+  )
+
+```
+
+```{r}
+
+# want to do same plot but now a different line per year for comparison
+hourly_trends_yearly <- beach_311 |> 
+
+  # count requests per hour by year
+  count(year_col, hour_col) |> 
+  
+  # make year a factor 
+  mutate(year = as.factor(year_col))
+
+# create the line plots
+ggplot(hourly_trends_yearly, aes(x = hour_col, y = n, color = year, group = year)) +
+  
+  # add lines and points 
+  geom_line(size = 1) + 
+  geom_point(size = 2, alpha = 0.8) +
+  
+  scale_color_viridis_d(option = "plasma", end = 0.9, name = "Year") +
+  
+  # ensure x axis properly labelled
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  
+  theme_minimal() +
+  labs(
+    title = "Hourly Pattern of 311 Requests (2021-2025)",
+    subtitle = "Comparing daily complaint rhythms across different years",
+    x = "Hour of Day (24h)",
+    y = "Total Requests"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor.x = element_blank() 
+  )
+
+```
+
+
+
+
+```{r}
+# want to find the most "problematic" intersections
+# combine street names to find unique intersections
+intersection_counts <- beach_311 |>
+  filter(!is.na(Intersection.Street.1) & !is.na(Intersection.Street.2) & Intersection.Street.2 != "" ) |>
+  mutate(intersection = paste(Intersection.Street.1, "&", Intersection.Street.2)) |>
+  count(intersection, sort = TRUE) |>
+  head(10)
+
+# create bar plot of top 10 intersections
+ggplot(intersection_counts, aes(x = reorder(intersection, n), y = n)) +
+  geom_col(fill = "purple") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 Problem Intersections",
+       subtitle = "Intersections with most 311 complaints",
+       y = "Number of Complaints",
+       x = "Intersection")
+
+```
+
+```{r}
+# want to do same analysis but faceted per year
+intersection_evolution <- beach_311 |>
+
+  # name intersections
+  filter(!is.na(Intersection.Street.1) & !is.na(Intersection.Street.2) & Intersection.Street.2 != "") |>
+  mutate(intersection = paste(Intersection.Street.1, "&", Intersection.Street.2)) |> 
+  
+  # count per Year
+  count(year_col, intersection) |> 
+  
+  # take top 10 from each year
+  group_by(year_col) |> 
+  slice_max(n, n = 10) |> 
+  ungroup()
+
+# plot the faceted bar charts
+ggplot(intersection_evolution, aes(
+    x = reorder_within(intersection, n, year_col), 
+    y = n
+  )) +
+  geom_col(fill = "purple", width = 0.7) +
+  coord_flip() +
+  
+  facet_wrap(~year_col, scales = "free_y") +
+  scale_x_reordered() +
+  
+  theme_minimal() +
+  labs(
+    title = "Evolution of Top Problem Intersections (2021-2025)",
+    subtitle = "Comparing the most complained-about intersections by year",
+    x = NULL,
+    y = "Number of Complaints"
+  )
+
+
+```
+
+```{r}
+# investigate to see if trend of complaints is increasing or decreasing at the most "problematic" locations
+# filter for top 5 intersections by count
+top_5_intersections <- beach_311 |> 
+  filter(!is.na(Intersection.Street.1) & !is.na(Intersection.Street.2) & Intersection.Street.2 != "") |>
+  mutate(intersection = paste(Intersection.Street.1, "&", Intersection.Street.2)) |> 
+  count(intersection, sort = TRUE) |> 
+  head(5) |> 
+  pull(intersection) 
+
+# track the intersections over the year
+intersection_trends <- beach_311 |> 
+  mutate(
+    year = year(creation_date),
+    intersection = paste(Intersection.Street.1, "&", Intersection.Street.2)
+  ) |> 
+  filter(year >= 2021 & year <= 2025) |> 
+  filter(intersection %in% top_5_intersections) |> 
+  count(year, intersection)
+
+# plot the yearly trend lines
+ggplot(intersection_trends, aes(x = year, y = n, color = intersection)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Complaint Trends: Top 5 Problem Intersections",
+    subtitle = "Are the worst intersections getting better or worse?",
+    x = "Year",
+    y = "Total Complaints",
+    color = "Intersection"
+  )
+
+
+```
+
+
+
+
+```{r}
+# 1. Aggregate by Month (for the entire 5-year period)
+monthly_trend <- beach_311 |>
+  mutate(month_year = floor_date(creation_date, "month")) |>
+  count(month_year)
+
+# 2. Plot
+ggplot(monthly_trend, aes(x = month_year, y = n)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  # Add a smoother to see the general direction (up or down)
+  geom_smooth(method = "loess", color = "firebrick", se = FALSE) + 
+  theme_minimal() +
+  labs(
+    title = "5-Year Trend of 311 Requests",
+    subtitle = "Blue = Actual Volume | Red = Smoothed Trend",
+    x = "Date",
+    y = "Total Requests"
+  )
+
+```
+
+
+```{r}
+# 1. Find the Top 5 categories of ALL TIME
+top_5_types <- beach_311 |>
+  count(Service.Request.Type, sort = TRUE) |>
+  head(5) |>
+  pull(Service.Request.Type)
+
+# 2. Filter data to just those 5 and count by Year
+category_trends <- beach_311 |>
+  filter(Service.Request.Type %in% top_5_types) |>
+  count(year_col, Service.Request.Type)
+
+# 3. Plot multi-line chart
+ggplot(category_trends, aes(x = year_col, y = n, color = Service.Request.Type)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Evolution of Top 5 Complaints (2021-2025)",
+    x = "Year",
+    y = "Number of Requests",
+    color = "Request Type"
+  )
+
+
+```
+
+```{r}
+# Count by Year and Month
+heatmap_data <- beach_311 |>
+  count(year_col, month_col)
+
+ggplot(heatmap_data, aes(x = month_col, y = factor(year_col), fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma", direction = -1) +
+  theme_minimal() +
+  labs(
+    title = "311 Request Intensity Heatmap",
+    x = "Month",
+    y = "Year",
+    fill = "Volume"
+  )
+
+```
+
+
+
+
