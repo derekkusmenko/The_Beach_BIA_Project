@@ -564,7 +564,7 @@ Import Toronto Daily Temperature historical data
 
 ```{r}
 library(readr)
-Toronto_Daily_Temp <- read_csv("Toronto_Daily_Temp.csv")
+Toronto_Daily_Temp <- read_csv("../01_Data/Toronto_Daily_Temp.csv")
 Toronto_Daily_Temp <- clean_names(Toronto_Daily_Temp)
 Toronto_Daily_Temp <- Toronto_Daily_Temp |> filter(local_year > 2020)
 
